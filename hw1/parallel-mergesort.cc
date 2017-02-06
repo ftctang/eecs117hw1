@@ -7,116 +7,182 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <omp.h>
+#include "omp.h"
 #include "sort.hh"
-keytype* merge(keytype* A,keytype* B , int SizeA, int SizeB );
-int binarySearch(keytype* A, int vertex);
+#include <string.h>
 
-keytype* parallelSort (int N, keytype* A)
+void  mergesort(keytype* A , int p , int r,keytype* Init , int threads);
+void  merge(keytype* A,int p, int q, int r ,keytype* Init,int threads );
+void  pmerge(keytype* A, keytype* Init , int p1,int r1, int p2,int r2 , int p3, int threads);
+void smergesort(keytype* A, int p, int r, keytype* Init);
+void smerge( keytype* A, int p, int q, int r, keytype* Init);
+int binarySearch(keytype* Init, int vertex , int p, int r);
+
+void parallelSort (int N, keytype* A) //Main Function
 {	
-	if( N < 2){
-	  return A;
-	}
-	keytype* temp = newKeys(N/2);
-	keytype* temp2 = newKeys(N/2);
-	keytype* temp3 = newKeys(N/2);
-	keytype* temp4 = newKeys(N/2);
-
-	for(int i = 0 ; i < N/2 ; i ++){
-		temp[i] = A[i];
+	omp_set_num_threads(N-1);
+	int tcount = omp_get_num_threads();
+	keytype* Init = newKeys(N);
+	#pragma omptask parallel
+	{
+	mergesort(A, 0, N-1,Init, N/tcount);	
 	}
 	
-	int x = (N/2) ;
-	int y = 0;
-	int x2 = N - x;
-	for(int i = x ; i < N ; i ++){
-		temp2[y] = A[i];
-		y++;	
-	}
-//	#pragma omp parallel 
-//	{
-		temp3 = parallelSort( x, temp);
-//	}	
-//	#pragma omp parallel 
-//	{
-		temp4 = parallelSort( x, temp2);
-//	}
-//	#pragma omp barrier
-	return merge(temp3,temp4,x,x2);
+	free (Init); //Release 
 }
 
-keytype* merge(keytype* A,keytype* B,int SizeA,int SizeB ){
-	int V1;
-	int size = SizeA + SizeB;
-	keytype* Small = newKeys(2);
-	int x1 = SizeA /2;
-	int temp = 0;
-	int temp2 = 0;
-	if( size <= 2){ //if A and B are one
+void  mergesort(keytype* A , int p , int r, keytype* Init, int threads){ //MergeSort
+	if ( (r-p + 1) <= threads) {
+		smergesort(A,  p, r, Init); //Correction
+		return;
+	}	
+	
+	int mid = p + (p+r)/2;
+	#pragma omp task
+	mergesort( A, p,mid,Init,threads);
+	mergesort( A,mid+1, r,Init,threads);
+	#pragma omp taskwait
+	merge( A ,p,mid,r,Init,threads);
+	memcpy (A + p, Init + p, (r-p+1) * sizeof(keytype)); //Copy Init into A
+	
+}
+
+void merge(keytype* A,int p, int q, int r ,keytype* Init,int threads){//Merge
+	pmerge(A,Init ,p ,q , q+1,r,p,threads);// Call parallel merge
+}
+
+void pmerge(keytype* A, keytype* Init , int p1,int r1, int p2,int r2 , int p3, int threads ){// Parallel Merge
+	
+	int n1 = r1 - p1 + 1;
+	int n2 = r2 - p2 + 1;
+	
+	if(n1 + n2 <= threads){
+		int x = p1;
+		int y = p2;
+		int z = p3;
+
+		while ( x <= r1 && y <= r2){ // Moving values from A into Init based on value 
+			if(A[x] <= A[y]){
+				Init[z] = A[x];
+				x++;
+			} else{
+				Init[z] = A[y];
+				y++;
+			}
+			z++;
+		}
 		
-		if (A[0] > B[0]){			
-			Small[0] = B[0];
-			Small[1] = A[0];
+		while (x <= r1){ // Values left in A[p1,r1]
+			Init[z] = A[x];
+			x++;
+			z++;
+		}
+		
+		while(y <= r2){  //Values left in A[p2,r2]
+			Init[z] = A[z];
+			y++;
+			z++;
+		}
+		return;
+	}
+	
+	if(n1 < n2){ //ensure n1 <= n2
+		int temp = p2;
+		p2 = p1;
+		p1 = temp;
+		temp = r2;
+		r2 = r1;
+		r1 = temp;
+		temp = n2;
+		n2 = n1;
+		n1 = temp;
+	}
+	
+	if(n1 == 0){ //Empty
+		return ;
+	}
+	
+	
+	int q1 = (p1 + r1) /2;
+	int vertex = A[q1];
+	int q2 = binarySearch(A,vertex , p2,r2);
+	int q3 = p3 + (q1 - p1) + (q2 -p2);
+	Init[q3] = A[q1];
+	#pragma omp task
+	pmerge(A,Init,p1,q1-1,p2,q2-1,p3,threads);
+	pmerge(A,Init,q1+1,r1,q2,r2,q3+1,threads);
+	#pragma omp taskwait	
+	
+}
+
+
+int binarySearch(keytype* A, int vertex , int p, int r) //Search for Index
+{
+	int low = p;
+	int max ;
+	int mid ;
+	int high;
+	if(p > r+1){
+		max = p;
+	}
+	else{
+		max = r+1;
+	}
+	high = max;
+	while (low < high){
+		mid = (low + high) / 2;
+		if (vertex <= A[mid] ){
+			high = mid ; 	
+		}
+		else {
+			low = mid +1;
+		}
+		
+	}
+	return high;
+}
+
+void smergesort(keytype* A, int p, int r, keytype* Init){ // Base case sorting
+	
+	if(p < r){
+		int q = (p+r)/2;
+		smergesort(A, p, q, Init);
+		smergesort(A, q+1, r, Init);
+		smerge(A, p, q, r, Init);
+	}
+}
+
+
+void smerge( keytype* A, int p, int q, int r, keytype* Init){ //For Base case merging
+	int x = p;
+	int y = q + 1;
+	int temp = p;
+	
+	while ( x <= q && y <= r){
+		if (A[x] <= A[y]){
+			Init[temp] = A[x];
+			x++;
+			temp++;
 		}
 		else{
-			Small[0] = A[0];
-			Small[1] = B[0];
+			Init[temp] = A[y];		
+			y++;
+			temp++;
 		}
-		return Small;
 	}
 	
-	keytype* Test = newKeys(size);
-	V1 = A[x1];
-	int k = binarySearch(B, V1);
-	int k2 = SizeB - k;
-	keytype* C1 = newKeys(x1);
-	keytype* C2 = newKeys(x1);
-	keytype* D1 = newKeys(k);
-	keytype* D2 = newKeys(k2);
-	
-	//Partition into C
-	for(int i = 0 ; i < x1 ; i++ ){ //C1
-		C1[i] = A[i];
-		
-	}
-	
-	for(int i = x1 ; i < SizeA ; i++ ){ //C2
-		C1[temp] = A[i];
+	while(x<=q){
+		Init[temp] = A[x];
+		x++;
 		temp++;
 	}
 	
-	
-	for(int i = 0 ; i < k ; i ++){ //D1
-		D1[i] = B[i];
+	while(y<=r){
+		Init[temp] = A[y];
+		y++;
+		temp++; 
 	}
-	
-	for(int i = k ; i < SizeB  ; i ++){ //D2
-		D2[temp2] = B[i];
-		temp2++;
-	}
-	int size3 = k + x1; //E1
-	int size4 = SizeA + k2; //E2
-	keytype* E1 = newKeys(size3);
-	keytype* E2 = newKeys(size4);
-	E1 = merge(C1,D1,x1,k); //E1
-	E2 = merge(C2,D2,x1,k2); //E2
-	
-	size = SizeA + SizeB;
-	keytype* Final = newKeys(size);
-
-	return Final;
+	memcpy(A + p, Init + p, (r - p + 1) * sizeof (keytype));
 }
 
-
-int binarySearch(keytype* A, int vertex)
-{
-	int vertexspot = 0; 
-	int x = sizeof(A) / sizeof(int);
-	for(int i = 0 ; i < x ; i++){
-			if(vertex > A[i]){
-				vertexspot++;
-			}
-				
-	}
-}
 /* eof */
